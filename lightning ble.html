@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset='utf-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1'>
+  <title>Lightning Controller (Bluetooth)</title>
+  <style>
+    body { font-family: Arial; max-width: 600px; margin: 50px auto; padding: 20px; background: #1a1a1a; color: #fff; }
+    h1 { color: #b980ff; text-align: center; text-transform: uppercase; letter-spacing: 4px; font-family: 'UnifrakturMaguntia', 'Old English Text MT', 'Blackletter686 BT', serif; font-size: 2.5em; }
+    h2 { text-transform: uppercase; letter-spacing: 2px; color: #d0a6ff; font-size: 1.1em; }
+    .section { background: #2a2a2a; padding: 20px; margin: 20px 0; border-radius: 10px; }
+    .control { margin: 15px 0; }
+    label { display: block; margin-bottom: 5px; color: #d0a6ff; }
+    .mode-buttons { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 5px; }
+    .mode-buttons button {
+      flex: 1 1 28%; background: #333; color: #fff; border: 2px solid #4a1d82;
+      padding: 16px 8px; border-radius: 8px; cursor: pointer; font-size: 14px;
+      text-transform: uppercase; letter-spacing: 1px;
+    }
+    .mode-buttons button:hover { background: #3a1566; }
+    .mode-buttons button.active { background: #8a3ffc; border-color: #8a3ffc; }
+    .chs button { flex: 1 1 20%; padding: 12px 4px; }
+    input[type='range'] {
+      -webkit-appearance: none; appearance: none;
+      width: 100%; height: 6px; border-radius: 3px; background: #444; outline: none;
+    }
+    input[type='range']::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 20px; height: 20px; border-radius: 50%; background: #8a3ffc;
+      cursor: pointer; border: 2px solid #fff;
+    }
+    input[type='range']::-moz-range-thumb {
+      width: 20px; height: 20px; border-radius: 50%; background: #8a3ffc;
+      cursor: pointer; border: none;
+    }
+    .value { float: right; color: #d0a6ff; font-weight: bold; }
+    .status { font-size: 13px; color: #aaa; line-height: 1.7; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <h1>Lightning</h1>
+
+  <div class='section'>
+    <div class='mode-buttons'><button type='button' id='conn' class='active'>Connect</button></div>
+    <div class='status' id='msg' style='margin-top:12px'>Bluetooth control</div>
+  </div>
+
+  <div id='ui' hidden>
+    <div class='section'>
+      <h2>Mode</h2>
+      <div class='mode-buttons' id='modes'></div>
+    </div>
+
+    <div class='section'>
+      <h2>Storm</h2>
+      <div id='sl'></div>
+    </div>
+
+    <div class='section'>
+      <h2>Test</h2>
+      <div class='mode-buttons'><button type='button' id='strike' class='active'>Strike now</button></div>
+      <div class='mode-buttons chs' id='chs' style='margin-top:10px'></div>
+    </div>
+
+    <div class='section'>
+      <h2>Status</h2>
+      <div class='status' id='status'></div>
+    </div>
+  </div>
+
+  <script>
+    const SVC   = 'c1a5e000-7d3b-4f4e-9a52-6b0f1f6e0001';
+    const CMD   = 'c1a5e000-7d3b-4f4e-9a52-6b0f1f6e0002';
+    const STATE = 'c1a5e000-7d3b-4f4e-9a52-6b0f1f6e0003';
+
+    const SL = [['bright','Brightness','%',1,100],['freq','Frequency','',1,100],['strokes','Max Strokes','',1,8],['spread','Channel Spread','',1,4],['decay','Afterglow','',0,100]];
+    const $ = s => document.querySelector(s);
+    let dev = null, cmdCh = null, stCh = null, q = Promise.resolve(), built = false, dragging = false, tm = {}, refreshTimer = null;
+
+    const setMsg = t => { $('#msg').textContent = t; };
+    // Web Bluetooth allows one GATT operation at a time, so everything goes through one queue.
+    const enqueue = fn => { q = q.then(fn).catch(e => setMsg(e && e.message ? e.message : String(e))); return q; };
+
+    async function write(text) {
+      const data = new TextEncoder().encode(text);
+      if (cmdCh.writeValueWithResponse) await cmdCh.writeValueWithResponse(data);
+      else await cmdCh.writeValue(data);
+    }
+    function cmd(text) { enqueue(() => write(text)); refreshSoon(); }
+    function refreshSoon() { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => enqueue(readState), 500); }
+
+    async function readState() {
+      const v = await stCh.readValue();
+      const t = new TextDecoder().decode(v);
+      const o = {};
+      t.split(';').forEach(p => { const i = p.indexOf('='); if (i > 0) o[p.slice(0, i)] = p.slice(i + 1); });
+      render(o);
+    }
+
+    function build(names) {
+      names.forEach((n, i) => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.textContent = n; b.dataset.i = i;
+        b.onclick = () => cmd('mode=' + i);
+        $('#modes').appendChild(b);
+      });
+      SL.forEach(([k, n, u, lo, hi]) => $('#sl').insertAdjacentHTML('beforeend',
+        `<div class='control'><label>${n}: <span class='value' id='v_${k}'></span></label><input type='range' id='s_${k}' min='${lo}' max='${hi}'></div>`));
+      SL.forEach(([k, , u]) => {
+        const e = $('#s_' + k);
+        e.addEventListener('input', () => {
+          $('#v_' + k).textContent = e.value + u;
+          clearTimeout(tm[k]);
+          tm[k] = setTimeout(() => cmd(k + '=' + e.value), 150);
+        });
+        e.addEventListener('pointerdown', () => dragging = true);
+        e.addEventListener('pointerup', () => dragging = false);
+        e.addEventListener('pointercancel', () => dragging = false);
+      });
+      for (let i = 0; i < 4; i++) {
+        const b = document.createElement('button');
+        b.type = 'button'; b.textContent = 'Ch ' + (i + 1);
+        b.onclick = () => cmd('test=' + i);
+        $('#chs').appendChild(b);
+      }
+      $('#strike').onclick = () => cmd('strike');
+      built = true;
+    }
+
+    const up = s => s < 3600 ? Math.floor(s / 60) + 'm' : Math.floor(s / 3600) + 'h ' + Math.floor(s % 3600 / 60) + 'm';
+
+    function render(o) {
+      if (!built) build((o.names || '').split(','));
+      const mode = +o.mode;
+      document.querySelectorAll('#modes button').forEach(b => b.classList.toggle('active', +b.dataset.i === mode));
+      if (!dragging) SL.forEach(([k, , u]) => { $('#s_' + k).value = o[k]; $('#v_' + k).textContent = o[k] + u; });
+      $('#status').innerHTML = `Up ${up(+o.up)} &middot; Last reset: ${o.reset} &middot; Boots: ${o.boots}<br>WiFi: ${o.wifi === '1' ? 'connected' : 'not connected'}`;
+    }
+
+    function onDisc() {
+      $('#ui').hidden = true;
+      $('#conn').textContent = 'Reconnect';
+      setMsg('Disconnected.');
+    }
+
+    async function connect() {
+      if (dev && dev.gatt.connected) { dev.gatt.disconnect(); return; }
+      try {
+        setMsg('Connecting...');
+        if (!dev) dev = await navigator.bluetooth.requestDevice({
+          filters: [{services: [SVC]}, {namePrefix: 'Lightning'}],
+          optionalServices: [SVC]
+        });
+        dev.removeEventListener('gattserverdisconnected', onDisc);
+        dev.addEventListener('gattserverdisconnected', onDisc);
+        const srv = await dev.gatt.connect();
+        const svc = await srv.getPrimaryService(SVC);
+        cmdCh = await svc.getCharacteristic(CMD);
+        stCh = await svc.getCharacteristic(STATE);
+        q = Promise.resolve();
+        await enqueue(readState);
+        $('#ui').hidden = false;
+        $('#conn').textContent = 'Disconnect';
+        setMsg('Connected to ' + (dev.name || 'Lightning'));
+      } catch (e) {
+        dev = null;
+        $('#conn').textContent = 'Connect';
+        setMsg(e && e.message ? e.message : String(e));
+      }
+    }
+
+    $('#conn').onclick = connect;
+    if (!navigator.bluetooth) {
+      $('#conn').hidden = true;
+      setMsg('This browser has no Web Bluetooth. Use Chrome or Edge on Android, Windows, Mac or Linux. On iPhone, Safari does not support it; the Bluefy browser does.');
+    }
+  </script>
+</body>
+</html>
