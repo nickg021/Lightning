@@ -11,6 +11,8 @@
     .section { background: #2a2a2a; padding: 20px; margin: 20px 0; border-radius: 10px; }
     .control { margin: 15px 0; }
     label { display: block; margin-bottom: 5px; color: #d0a6ff; }
+    label.check { display: flex; align-items: center; gap: 10px; color: #fff; cursor: pointer; }
+    input[type='checkbox'] { width: 22px; height: 22px; accent-color: #8a3ffc; margin: 0; }
     .mode-buttons { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 5px; }
     .mode-buttons button {
       flex: 1 1 28%; background: #333; color: #fff; border: 2px solid #4a1d82;
@@ -19,6 +21,7 @@
     }
     .mode-buttons button:hover { background: #3a1566; }
     .mode-buttons button.active { background: #8a3ffc; border-color: #8a3ffc; }
+    #styles button { flex: 1 1 40%; }
     .chs button { flex: 1 1 20%; padding: 12px 4px; }
     input[type='range'] {
       -webkit-appearance: none; appearance: none;
@@ -52,12 +55,22 @@
       <div class='mode-buttons' id='modes'></div>
     </div>
 
-    <div class='section'>
-      <h2>Storm</h2>
-      <div id='sl'></div>
+    <div class='section' id='styleSec' hidden>
+      <h2>Style</h2>
+      <div class='mode-buttons' id='styles'></div>
     </div>
 
-    <div class='section'>
+    <div class='section' id='adjSec' hidden>
+      <h2>Adjust</h2>
+      <div class='control'>
+        <label class='check'><input type='checkbox' id='save'><span id='saveLbl'>Save changes</span></label>
+        <div class='status' id='hint' style='margin-top:6px'></div>
+      </div>
+      <div id='lgrp' hidden></div>
+      <div id='sgrp' hidden></div>
+    </div>
+
+    <div class='section' id='testSec' hidden>
       <h2>Test</h2>
       <div class='mode-buttons'><button type='button' id='strike' class='active'>Strike now</button></div>
       <div class='mode-buttons chs' id='chs' style='margin-top:10px'></div>
@@ -74,9 +87,10 @@
     const CMD   = 'c1a5e000-7d3b-4f4e-9a52-6b0f1f6e0002';
     const STATE = 'c1a5e000-7d3b-4f4e-9a52-6b0f1f6e0003';
 
-    const SL = [['bright','Brightness','%',1,100],['freq','Frequency','',1,100],['strokes','Max Strokes','',1,8],['spread','Channel Spread','',1,4],['decay','Afterglow','',0,100]];
+    const LSL = [['bright','Brightness','%',1,100],['freq','Frequency','',1,100],['strokes','Max Strokes','',1,8],['spread','Channel Spread','',1,4],['decay','Afterglow','',0,100]];
+    const SSL = [['sspeed','Speed','',1,100],['sbright','Brightness','%',1,100]];
     const $ = s => document.querySelector(s);
-    let dev = null, cmdCh = null, stCh = null, q = Promise.resolve(), built = false, dragging = false, tm = {}, refreshTimer = null;
+    let dev = null, cmdCh = null, stCh = null, q = Promise.resolve(), built = false, dragging = false, tm = {}, refreshTimer = null, lastKey = '', names = null;
 
     const setMsg = t => { $('#msg').textContent = t; };
     // Web Bluetooth allows one GATT operation at a time, so everything goes through one queue.
@@ -98,26 +112,36 @@
       render(o);
     }
 
-    function build(names) {
-      names.forEach((n, i) => {
-        const b = document.createElement('button');
-        b.type = 'button'; b.textContent = n; b.dataset.i = i;
-        b.onclick = () => cmd('mode=' + i);
-        $('#modes').appendChild(b);
-      });
-      SL.forEach(([k, n, u, lo, hi]) => $('#sl').insertAdjacentHTML('beforeend',
-        `<div class='control'><label>${n}: <span class='value' id='v_${k}'></span></label><input type='range' id='s_${k}' min='${lo}' max='${hi}'></div>`));
-      SL.forEach(([k, , u]) => {
+    function mkBtn(n, i, host, key) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.textContent = n; b.dataset.i = i;
+      b.onclick = () => { $('#save').checked = false; cmd(key + '=' + i); };
+      $(host).appendChild(b);
+    }
+
+    function mkSliders(list, host) {
+      list.forEach(([k, n, u, lo, hi]) => {
+        host.insertAdjacentHTML('beforeend',
+          `<div class='control'><label>${n}: <span class='value' id='v_${k}'></span></label><input type='range' id='s_${k}' min='${lo}' max='${hi}'></div>`);
         const e = $('#s_' + k);
         e.addEventListener('input', () => {
           $('#v_' + k).textContent = e.value + u;
           clearTimeout(tm[k]);
-          tm[k] = setTimeout(() => cmd(k + '=' + e.value), 150);
+          tm[k] = setTimeout(() => {
+            tm[k] = 0;
+            cmd(k + '=' + e.value + ($('#save').checked ? ';save=1' : ''));
+          }, 150);
         });
         e.addEventListener('pointerdown', () => dragging = true);
-        e.addEventListener('pointerup', () => dragging = false);
-        e.addEventListener('pointercancel', () => dragging = false);
       });
+    }
+
+    function build(modes, styles) {
+      names = {modes, styles};
+      modes.forEach((n, i) => mkBtn(n, i, '#modes', 'mode'));
+      styles.forEach((n, i) => mkBtn(n, i, '#styles', 'style'));
+      mkSliders(LSL, $('#lgrp'));
+      mkSliders(SSL, $('#sgrp'));
       for (let i = 0; i < 4; i++) {
         const b = document.createElement('button');
         b.type = 'button'; b.textContent = 'Ch ' + (i + 1);
@@ -125,16 +149,32 @@
         $('#chs').appendChild(b);
       }
       $('#strike').onclick = () => cmd('strike');
+      $('#save').onchange = () => { if ($('#save').checked) cmd('save=1'); };
+      document.addEventListener('pointerup', () => dragging = false);
+      document.addEventListener('pointercancel', () => dragging = false);
       built = true;
     }
 
     const up = s => s < 3600 ? Math.floor(s / 60) + 'm' : Math.floor(s / 3600) + 'h ' + Math.floor(s % 3600 / 60) + 'm';
 
     function render(o) {
-      if (!built) build((o.names || '').split(','));
-      const mode = +o.mode;
+      if (!built) build((o.modes || '').split(','), (o.styles || '').split(','));
+      const mode = +o.mode, style = +o.style;
+      const key = mode + '/' + style;
+      if (key !== lastKey) { lastKey = key; $('#save').checked = false; }
       document.querySelectorAll('#modes button').forEach(b => b.classList.toggle('active', +b.dataset.i === mode));
-      if (!dragging) SL.forEach(([k, , u]) => { $('#s_' + k).value = o[k]; $('#v_' + k).textContent = o[k] + u; });
+      document.querySelectorAll('#styles button').forEach(b => b.classList.toggle('active', +b.dataset.i === style));
+      $('#styleSec').hidden = mode !== 1;
+      $('#adjSec').hidden = mode === 0;
+      $('#lgrp').hidden = mode !== 1;
+      $('#sgrp').hidden = mode !== 2;
+      $('#testSec').hidden = mode === 2;
+      $('#saveLbl').textContent = 'Save changes to ' + (mode === 1 ? names.styles[style] : 'Strobe');
+      $('#hint').textContent = o.dirty === '1' ? 'Unsaved adjustments (temporary)' : 'Matches saved settings';
+      if (!dragging) [...LSL, ...SSL].forEach(([k, , u]) => {
+        if (tm[k]) return;
+        $('#s_' + k).value = o[k]; $('#v_' + k).textContent = o[k] + u;
+      });
       $('#status').innerHTML = `Up ${up(+o.up)} &middot; Last reset: ${o.reset} &middot; Boots: ${o.boots}<br>WiFi: ${o.wifi === '1' ? 'connected' : 'not connected'}`;
     }
 
